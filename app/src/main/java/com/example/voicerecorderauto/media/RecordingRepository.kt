@@ -215,6 +215,19 @@ class RecordingRepository(private val context: Context) {
         }
     }
 
+    /**
+     * Groups pre-loaded recordings by date (month/year).
+     * This method performs NO I/O - it only processes the provided list.
+     * Use this instead of getRecordingsByDate() to avoid redundant loading.
+     */
+    fun groupRecordingsByDate(recordings: List<VoiceRecording>): Map<String, List<VoiceRecording>> {
+        val dateFormat = SimpleDateFormat("MMMM yyyy", Locale.getDefault())
+        return recordings.groupBy { recording ->
+            dateFormat.format(Date(recording.dateAdded * 1000))
+        }
+    }
+
+    @Deprecated("Use groupRecordingsByDate(recordings) with pre-loaded data instead - this blocks the calling thread")
     fun getRecordingsByDate(): Map<String, List<VoiceRecording>> {
         val dateFormat = SimpleDateFormat("MMMM yyyy", Locale.getDefault())
         return getAllRecordingsSync().groupBy { recording ->

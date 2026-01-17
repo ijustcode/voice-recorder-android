@@ -27,6 +27,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 class VoiceRecorderMediaService : MediaBrowserServiceCompat() {
 
@@ -42,7 +44,23 @@ class VoiceRecorderMediaService : MediaBrowserServiceCompat() {
     private val serviceJob = Job()
     private val serviceScope = CoroutineScope(Dispatchers.Main + serviceJob)
 
-    private var recordings: List<VoiceRecording> = emptyList()
+    // Thread-safe state using AtomicReference
+    private val recordingsRef = AtomicReference<List<VoiceRecording>>(emptyList())
+    private val recordingsByDateRef = AtomicReference<Map<String, List<VoiceRecording>>>(emptyMap())
+    private val isDataLoaded = AtomicBoolean(false)
+
+    // Pending results queue for requests that arrive before data loads
+    private val pendingResults = mutableListOf<Pair<String, Result<MutableList<MediaBrowserCompat.MediaItem>>>>()
+    private val pendingResultsLock = Object()
+
+    private var recordings: List<VoiceRecording>
+        get() = recordingsRef.get()
+        set(value) = recordingsRef.set(value)
+
+    private var recordingsByDate: Map<String, List<VoiceRecording>>
+        get() = recordingsByDateRef.get()
+        set(value) = recordingsByDateRef.set(value)
+
     private var currentRecording: VoiceRecording? = null
 
     override fun onCreate() {
@@ -105,15 +123,35 @@ class VoiceRecorderMediaService : MediaBrowserServiceCompat() {
 
     private fun loadRecordings() {
         if (!StorageHelper.hasStoragePermission(this)) {
+            // No permission - mark as loaded so pending requests get empty results
+            isDataLoaded.set(true)
+            processPendingResults()
             return
         }
 
         serviceScope.launch {
-            recordings = withContext(Dispatchers.IO) {
-                recordingRepository.getAllRecordings()
+            try {
+                val loadedRecordings = withContext(Dispatchers.IO) {
+                    recordingRepository.getAllRecordings()
+                }
+
+                // Update both caches atomically
+                recordings = loadedRecordings
+                recordingsByDate = recordingRepository.groupRecordingsByDate(loadedRecordings)
+
+                // Mark data as loaded and process any pending requests
+                isDataLoaded.set(true)
+                processPendingResults()
+
+                // Notify all browsable nodes that data has changed
+                notifyChildrenChanged(MediaItemBuilder.MEDIA_ROOT_ID)
+                notifyChildrenChanged(MediaItemBuilder.MEDIA_ALL_RECORDINGS_ID)
+                notifyChildrenChanged(MediaItemBuilder.MEDIA_BY_DATE_ID)
+            } catch (e: Exception) {
+                // On error, still mark as loaded so pending requests complete (with empty data)
+                isDataLoaded.set(true)
+                processPendingResults()
             }
-            notifyChildrenChanged(MediaItemBuilder.MEDIA_ROOT_ID)
-            notifyChildrenChanged(MediaItemBuilder.MEDIA_ALL_RECORDINGS_ID)
         }
     }
 
@@ -132,33 +170,65 @@ class VoiceRecorderMediaService : MediaBrowserServiceCompat() {
     ) {
         result.detach()
 
-        serviceScope.launch {
-            val items = when (parentId) {
-                MediaItemBuilder.MEDIA_ROOT_ID -> {
-                    MediaItemBuilder.buildRootItems().toMutableList()
-                }
-                MediaItemBuilder.MEDIA_ALL_RECORDINGS_ID -> {
-                    recordings.map { MediaItemBuilder.buildRecordingItem(it) }.toMutableList()
-                }
-                MediaItemBuilder.MEDIA_BY_DATE_ID -> {
-                    val byDate = recordingRepository.getRecordingsByDate()
-                    byDate.map { (date, recs) ->
-                        MediaItemBuilder.buildDateCategoryItem(date, recs.size)
-                    }.toMutableList()
-                }
-                else -> {
-                    // Handle date category items
-                    if (parentId.startsWith("date_")) {
-                        val date = parentId.removePrefix("date_")
-                        val byDate = recordingRepository.getRecordingsByDate()
-                        byDate[date]?.map { MediaItemBuilder.buildRecordingItem(it) }?.toMutableList()
-                            ?: mutableListOf()
-                    } else {
-                        mutableListOf()
-                    }
+        // If data hasn't loaded yet, queue the request to be processed later
+        if (!isDataLoaded.get()) {
+            synchronized(pendingResultsLock) {
+                pendingResults.add(Pair(parentId, result))
+            }
+            return
+        }
+
+        // Data is loaded, process immediately
+        sendResultForParentId(parentId, result)
+    }
+
+    /**
+     * Builds and sends the result for a given parentId.
+     * This method uses ONLY cached data - no I/O operations.
+     */
+    private fun sendResultForParentId(
+        parentId: String,
+        result: Result<MutableList<MediaBrowserCompat.MediaItem>>
+    ) {
+        val items = when (parentId) {
+            MediaItemBuilder.MEDIA_ROOT_ID -> {
+                MediaItemBuilder.buildRootItems().toMutableList()
+            }
+            MediaItemBuilder.MEDIA_ALL_RECORDINGS_ID -> {
+                // Use cached recordings (already loaded)
+                recordings.map { MediaItemBuilder.buildRecordingItem(it) }.toMutableList()
+            }
+            MediaItemBuilder.MEDIA_BY_DATE_ID -> {
+                // Use cached by-date grouping (no I/O needed!)
+                recordingsByDate.map { (date, recs) ->
+                    MediaItemBuilder.buildDateCategoryItem(date, recs.size)
+                }.toMutableList()
+            }
+            else -> {
+                // Handle date category items
+                if (parentId.startsWith("date_")) {
+                    val date = parentId.removePrefix("date_")
+                    // Use cached by-date grouping (no I/O needed!)
+                    recordingsByDate[date]?.map {
+                        MediaItemBuilder.buildRecordingItem(it)
+                    }?.toMutableList() ?: mutableListOf()
+                } else {
+                    mutableListOf()
                 }
             }
-            result.sendResult(items)
+        }
+        result.sendResult(items)
+    }
+
+    /**
+     * Processes all pending results that were queued while data was loading.
+     */
+    private fun processPendingResults() {
+        synchronized(pendingResultsLock) {
+            pendingResults.forEach { (parentId, result) ->
+                sendResultForParentId(parentId, result)
+            }
+            pendingResults.clear()
         }
     }
 
