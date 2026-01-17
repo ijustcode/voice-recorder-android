@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Voice Recorder Auto</string>
+    <string name="permission_rationale">This app needs access to your audio files to display and play voice recordings through Android Auto.</string>
+    <string name="grant_permission">Grant Permission</string>
+    <string name="no_recordings">No Recordings Found</string>
+    <string name="now_playing">Now Playing</string>
+</resources>

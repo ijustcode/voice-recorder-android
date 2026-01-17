@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./gradlew assembleDebug:*)",
+      "Bash(export ANDROID_HOME=/opt/homebrew/share/android-commandlinetools)",
+      "Bash(sdkmanager:*)",
+      "Bash(/opt/homebrew/share/android-commandlinetools/platform-tools/adb install:*)",
+      "Bash(/opt/homebrew/share/android-commandlinetools/platform-tools/adb logcat -d -s AndroidRuntime:E)",
+      "Bash(/opt/homebrew/share/android-commandlinetools/platform-tools/adb logcat -d)"
+    ]
+  }
+}
