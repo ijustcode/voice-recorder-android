@@ -4,7 +4,11 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.Context
 import android.content.Intent
+import android.media.AudioAttributes
+import android.media.AudioFocusRequest
+import android.media.AudioManager
 import android.os.Build
 import android.os.Bundle
 import android.support.v4.media.MediaBrowserCompat
@@ -14,6 +18,7 @@ import android.support.v4.media.session.PlaybackStateCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import androidx.media.MediaBrowserServiceCompat
+import androidx.media3.common.C
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import com.example.voicerecorderauto.MainActivity
@@ -41,6 +46,9 @@ class VoiceRecorderMediaService : MediaBrowserServiceCompat() {
     private lateinit var mediaSession: MediaSessionCompat
     private lateinit var player: ExoPlayer
     private lateinit var recordingRepository: RecordingRepository
+    private lateinit var audioManager: AudioManager
+    private var audioFocusRequest: AudioFocusRequest? = null
+    private var hasAudioFocus = false
     private val serviceJob = Job()
     private val serviceScope = CoroutineScope(Dispatchers.Main + serviceJob)
 
@@ -66,6 +74,7 @@ class VoiceRecorderMediaService : MediaBrowserServiceCompat() {
     override fun onCreate() {
         super.onCreate()
 
+        audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
         recordingRepository = RecordingRepository(this)
         createNotificationChannel()
         initializePlayer()
@@ -92,7 +101,18 @@ class VoiceRecorderMediaService : MediaBrowserServiceCompat() {
     }
 
     private fun initializePlayer() {
-        player = ExoPlayer.Builder(this).build()
+        // Configure audio attributes for media playback
+        // This is CRITICAL for Android Auto - without this, audio won't route properly
+        // when your app is the first to play audio
+        val audioAttributes = androidx.media3.common.AudioAttributes.Builder()
+            .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
+            .setUsage(C.USAGE_MEDIA)
+            .build()
+
+        player = ExoPlayer.Builder(this)
+            .setAudioAttributes(audioAttributes, /* handleAudioFocus= */ false)
+            .build()
+
         player.addListener(object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
                 updatePlaybackState()
@@ -247,7 +267,7 @@ class VoiceRecorderMediaService : MediaBrowserServiceCompat() {
     private inner class MediaSessionCallback : MediaSessionCompat.Callback() {
 
         override fun onPlay() {
-            if (currentRecording != null) {
+            if (currentRecording != null && requestAudioFocus()) {
                 player.play()
                 startForegroundService()
                 updatePlaybackState()
@@ -261,6 +281,7 @@ class VoiceRecorderMediaService : MediaBrowserServiceCompat() {
 
         override fun onStop() {
             player.stop()
+            abandonAudioFocus()
             stopForeground(STOP_FOREGROUND_REMOVE)
             updatePlaybackState()
         }
@@ -305,10 +326,84 @@ class VoiceRecorderMediaService : MediaBrowserServiceCompat() {
         val mediaItem = MediaItemBuilder.buildMedia3Item(recording)
         player.setMediaItem(mediaItem)
         player.prepare()
-        player.play()
 
-        updateMetadata(recording)
-        startForegroundService()
+        // Request audio focus before starting playback
+        if (requestAudioFocus()) {
+            player.play()
+            updateMetadata(recording)
+            startForegroundService()
+        }
+    }
+
+    private val audioFocusChangeListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
+        when (focusChange) {
+            AudioManager.AUDIOFOCUS_GAIN -> {
+                // Resume playback or raise volume back to normal
+                hasAudioFocus = true
+                player.volume = 1.0f
+                if (currentRecording != null && !player.isPlaying) {
+                    player.play()
+                }
+            }
+            AudioManager.AUDIOFOCUS_LOSS -> {
+                // Permanent loss - stop and release
+                hasAudioFocus = false
+                player.pause()
+                abandonAudioFocus()
+            }
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
+                // Temporary loss (e.g., phone call) - pause
+                hasAudioFocus = false
+                player.pause()
+            }
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
+                // Lower volume while other audio plays
+                player.volume = 0.3f
+            }
+        }
+        updatePlaybackState()
+    }
+
+    private fun requestAudioFocus(): Boolean {
+        if (hasAudioFocus) return true
+
+        val result: Int
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val audioAttributes = AudioAttributes.Builder()
+                .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                .setUsage(AudioAttributes.USAGE_MEDIA)
+                .build()
+
+            audioFocusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                .setAudioAttributes(audioAttributes)
+                .setAcceptsDelayedFocusGain(true)
+                .setOnAudioFocusChangeListener(audioFocusChangeListener)
+                .build()
+
+            result = audioManager.requestAudioFocus(audioFocusRequest!!)
+        } else {
+            @Suppress("DEPRECATION")
+            result = audioManager.requestAudioFocus(
+                audioFocusChangeListener,
+                AudioManager.STREAM_MUSIC,
+                AudioManager.AUDIOFOCUS_GAIN
+            )
+        }
+
+        hasAudioFocus = (result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED)
+        return hasAudioFocus
+    }
+
+    private fun abandonAudioFocus() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            audioFocusRequest?.let {
+                audioManager.abandonAudioFocusRequest(it)
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            audioManager.abandonAudioFocus(audioFocusChangeListener)
+        }
+        hasAudioFocus = false
     }
 
     private fun updateMetadata(recording: VoiceRecording) {
@@ -421,6 +516,7 @@ class VoiceRecorderMediaService : MediaBrowserServiceCompat() {
 
     override fun onDestroy() {
         super.onDestroy()
+        abandonAudioFocus()
         serviceJob.cancel()
         mediaSession.release()
         player.release()
