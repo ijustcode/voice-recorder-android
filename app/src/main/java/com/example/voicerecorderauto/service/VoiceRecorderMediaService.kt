@@ -129,6 +129,16 @@ class VoiceRecorderMediaService : MediaBrowserServiceCompat() {
             return
         }
 
+        // Step 1: Load from cache instantly (no blocking I/O)
+        val cached = recordingRepository.getCachedRecordings()
+        if (cached.isNotEmpty()) {
+            recordings = cached
+            recordingsByDate = recordingRepository.groupRecordingsByDate(cached)
+            isDataLoaded.set(true)
+            processPendingResults()
+        }
+
+        // Step 2: Refresh from disk in background
         serviceScope.launch {
             try {
                 val loadedRecordings = withContext(Dispatchers.IO) {
@@ -139,9 +149,10 @@ class VoiceRecorderMediaService : MediaBrowserServiceCompat() {
                 recordings = loadedRecordings
                 recordingsByDate = recordingRepository.groupRecordingsByDate(loadedRecordings)
 
-                // Mark data as loaded and process any pending requests
-                isDataLoaded.set(true)
-                processPendingResults()
+                // Mark data as loaded and process any pending requests (if not already done)
+                if (!isDataLoaded.getAndSet(true)) {
+                    processPendingResults()
+                }
 
                 // Notify all browsable nodes that data has changed
                 notifyChildrenChanged(MediaItemBuilder.MEDIA_ROOT_ID)
@@ -149,8 +160,9 @@ class VoiceRecorderMediaService : MediaBrowserServiceCompat() {
                 notifyChildrenChanged(MediaItemBuilder.MEDIA_BY_DATE_ID)
             } catch (e: Exception) {
                 // On error, still mark as loaded so pending requests complete (with empty data)
-                isDataLoaded.set(true)
-                processPendingResults()
+                if (!isDataLoaded.getAndSet(true)) {
+                    processPendingResults()
+                }
             }
         }
     }

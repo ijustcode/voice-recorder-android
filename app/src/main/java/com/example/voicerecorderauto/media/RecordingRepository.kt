@@ -2,12 +2,15 @@ package com.example.voicerecorderauto.media
 
 import android.content.ContentUris
 import android.content.Context
+import android.content.SharedPreferences
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -22,6 +25,36 @@ data class VoiceRecording(
     val filePath: String,
     val size: Long
 ) {
+    fun toJson(): JSONObject {
+        return JSONObject().apply {
+            put("id", id)
+            put("title", title)
+            put("uri", uri.toString())
+            put("duration", duration)
+            put("dateAdded", dateAdded)
+            put("filePath", filePath)
+            put("size", size)
+        }
+    }
+
+    companion object {
+        fun fromJson(json: JSONObject): VoiceRecording? {
+            return try {
+                VoiceRecording(
+                    id = json.getString("id"),
+                    title = json.getString("title"),
+                    uri = Uri.parse(json.getString("uri")),
+                    duration = json.getLong("duration"),
+                    dateAdded = json.getLong("dateAdded"),
+                    filePath = json.getString("filePath"),
+                    size = json.getLong("size")
+                )
+            } catch (e: Exception) {
+                null
+            }
+        }
+    }
+
     val formattedDate: String
         get() = SimpleDateFormat("MMM dd, yyyy HH:mm", Locale.getDefault())
             .format(Date(dateAdded * 1000))
@@ -41,6 +74,10 @@ data class VoiceRecording(
 class RecordingRepository(private val context: Context) {
 
     companion object {
+        private const val PREFS_NAME = "voice_recorder_cache"
+        private const val KEY_RECORDINGS = "cached_recordings"
+        private const val KEY_CACHE_TIME = "cache_timestamp"
+
         private val SAMSUNG_VOICE_RECORDER_PATHS = listOf(
             "Recordings",
             "Samsung/Voice Recorder",
@@ -53,6 +90,53 @@ class RecordingRepository(private val context: Context) {
         )
     }
 
+    private val prefs: SharedPreferences by lazy {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    }
+
+    /**
+     * Gets cached recordings instantly (no I/O to MediaStore).
+     * Returns empty list if no cache exists.
+     */
+    fun getCachedRecordings(): List<VoiceRecording> {
+        return try {
+            val json = prefs.getString(KEY_RECORDINGS, null) ?: return emptyList()
+            val jsonArray = JSONArray(json)
+            val recordings = mutableListOf<VoiceRecording>()
+            for (i in 0 until jsonArray.length()) {
+                VoiceRecording.fromJson(jsonArray.getJSONObject(i))?.let {
+                    recordings.add(it)
+                }
+            }
+            recordings
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    /**
+     * Saves recordings to disk cache.
+     */
+    private fun saveToCache(recordings: List<VoiceRecording>) {
+        try {
+            val jsonArray = JSONArray()
+            recordings.forEach { jsonArray.put(it.toJson()) }
+            prefs.edit()
+                .putString(KEY_RECORDINGS, jsonArray.toString())
+                .putLong(KEY_CACHE_TIME, System.currentTimeMillis())
+                .apply()
+        } catch (e: Exception) {
+            // Ignore cache errors
+        }
+    }
+
+    /**
+     * Returns true if cache exists.
+     */
+    fun hasCachedRecordings(): Boolean {
+        return prefs.contains(KEY_RECORDINGS)
+    }
+
     suspend fun getAllRecordings(): List<VoiceRecording> = withContext(Dispatchers.IO) {
         val recordings = mutableListOf<VoiceRecording>()
 
@@ -63,8 +147,13 @@ class RecordingRepository(private val context: Context) {
         recordings.addAll(scanVoiceRecorderDirectories())
 
         // Remove duplicates based on file path
-        recordings.distinctBy { it.filePath }
+        val result = recordings.distinctBy { it.filePath }
             .sortedByDescending { it.dateAdded }
+
+        // Save to cache for fast startup next time
+        saveToCache(result)
+
+        result
     }
 
     private fun getRecordingsFromMediaStore(): List<VoiceRecording> {

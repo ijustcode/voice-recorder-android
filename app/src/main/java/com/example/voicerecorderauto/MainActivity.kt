@@ -185,15 +185,27 @@ fun RecordingsContent(
 ) {
     var recordings by remember { mutableStateOf<List<VoiceRecording>>(emptyList()) }
     var isLoading by remember { mutableStateOf(true) }
+    var isRefreshing by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
     val playbackState by playbackService.playbackState.collectAsState()
 
     LaunchedEffect(Unit) {
-        recordings = withContext(Dispatchers.IO) {
+        // Step 1: Load from cache instantly (no I/O)
+        val cached = recordingRepository.getCachedRecordings()
+        if (cached.isNotEmpty()) {
+            recordings = cached
+            isLoading = false
+            isRefreshing = true
+        }
+
+        // Step 2: Refresh from disk in background
+        val fresh = withContext(Dispatchers.IO) {
             recordingRepository.getAllRecordings()
         }
+        recordings = fresh
         isLoading = false
+        isRefreshing = false
     }
 
     // Connection is handled by Activity lifecycle (onStart/onStop)
