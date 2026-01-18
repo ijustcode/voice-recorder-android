@@ -102,10 +102,10 @@ The built APK will be at:
 ./gradlew installDebug
 
 # Or use adb directly
-adb install app/build/outputs/apk/debug/app-debug.apk
+adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 # Install and launch
-adb install app/build/outputs/apk/debug/app-debug.apk && \
+adb install -r app/build/outputs/apk/debug/app-debug.apk && \
 adb shell am start -n com.example.voicerecorderauto/.MainActivity
 ```
 
