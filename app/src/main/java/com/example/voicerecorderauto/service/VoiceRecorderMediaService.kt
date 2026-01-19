@@ -41,6 +41,7 @@ class VoiceRecorderMediaService : MediaBrowserServiceCompat() {
         private const val NOTIFICATION_ID = 1
         private const val CHANNEL_ID = "voice_recorder_playback"
         private const val LOG_TAG = "VoiceRecorderMediaService"
+        private const val ACTION_REFRESH = "com.example.voicerecorderauto.ACTION_REFRESH"
     }
 
     private lateinit var mediaSession: MediaSessionCompat
@@ -318,6 +319,14 @@ class VoiceRecorderMediaService : MediaBrowserServiceCompat() {
                 playRecording(recording)
             }
         }
+
+        override fun onCustomAction(action: String?, extras: Bundle?) {
+            when (action) {
+                ACTION_REFRESH -> {
+                    refreshRecordings()
+                }
+            }
+        }
     }
 
     private fun playRecording(recording: VoiceRecording) {
@@ -429,6 +438,13 @@ class VoiceRecorderMediaService : MediaBrowserServiceCompat() {
                 PlaybackStateCompat.ACTION_SKIP_TO_NEXT or
                 PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS or
                 PlaybackStateCompat.ACTION_SEEK_TO
+            )
+            .addCustomAction(
+                PlaybackStateCompat.CustomAction.Builder(
+                    ACTION_REFRESH,
+                    "Refresh",
+                    R.drawable.ic_refresh
+                ).build()
             )
             .setState(state, player.currentPosition, player.playbackParameters.speed)
             .build()
