@@ -11,11 +11,13 @@ import androidx.media3.common.MediaMetadata
 object MediaItemBuilder {
 
     const val MEDIA_ROOT_ID = "root"
+    const val MEDIA_REFRESH_ID = "refresh"
     const val MEDIA_ALL_RECORDINGS_ID = "all_recordings"
     const val MEDIA_BY_DATE_ID = "by_date"
 
     fun buildRootItems(): List<MediaBrowserCompat.MediaItem> {
         return listOf(
+            buildRefreshItem(),
             createBrowsableItem(
                 id = MEDIA_ALL_RECORDINGS_ID,
                 title = "All Recordings",
@@ -26,6 +28,20 @@ object MediaItemBuilder {
                 title = "By Date",
                 subtitle = "Browse recordings by date"
             )
+        )
+    }
+
+    fun buildRefreshItem(): MediaBrowserCompat.MediaItem {
+        val description = MediaDescriptionCompat.Builder()
+            .setMediaId(MEDIA_REFRESH_ID)
+            .setTitle("Refresh")
+            .setSubtitle("Tap to scan for new recordings")
+            .build()
+
+        // Use FLAG_PLAYABLE so it's tappable (not expandable like browsable items)
+        return MediaBrowserCompat.MediaItem(
+            description,
+            MediaBrowserCompat.MediaItem.FLAG_PLAYABLE
         )
     }
 
